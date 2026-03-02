@@ -1,1 +1,1 @@
-When performing a code review, respond in Chinese.
+When performing a code review, Always respond in Chinese (Simplified).
