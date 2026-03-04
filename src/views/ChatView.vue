@@ -77,8 +77,8 @@
           <div v-if="message.role === 'user'" class="avatar user-avatar">你</div>
         </div>
 
-        <!-- 加载动画 -->
-        <div v-if="chatStore.isLoading" class="message-row assistant">
+        <!-- 加载动画（流式模式下由气泡本身展示进度，不再显示三点动画）-->
+        <div v-if="chatStore.isLoading && !chatStore.isStreaming" class="message-row assistant">
           <div class="avatar assistant-avatar">AI</div>
           <div class="bubble-wrapper">
             <div class="message-bubble loading-bubble">
@@ -123,7 +123,7 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, nextTick } from 'vue'
 import { useChatStore } from '../store/chat'
-import { sendMessage } from '../api/chat'
+import { sendMessage, sendMessageStream } from '../api/chat'
 import type { Message, ChatRequest, HistoryItem } from '../types'
 
 const chatStore = useChatStore()
@@ -158,46 +158,80 @@ const handleSend = async () => {
 
   chatStore.addMessage(userMessage)
   chatStore.setLoading(true)
+  inputText.value = ''
   scrollToBottom()
 
-  try {
-    // 构建历史记录：当前消息已加入 store，去掉最后一条（即刚发的用户消息），其余作为 history
-    const allMessages = chatStore.messages
-    const history: HistoryItem[] = allMessages
-      .slice(0, -1)
-      .filter((m) => m.id !== 'welcome')
-      .map((m) => ({ role: m.role, content: m.content }))
+  // 构建历史记录：当前消息已加入 store，去掉最后一条（即刚发的用户消息），其余作为 history
+  const allMessages = chatStore.messages
+  const history: HistoryItem[] = allMessages
+    .slice(0, -1)
+    .filter((m) => m.id !== 'welcome')
+    .map((m) => ({ role: m.role, content: m.content }))
 
-    const requestData: ChatRequest = {
-      question: userMessage.content,
-      history: history.length > 0 ? history : undefined,
-      enable_thinking: chatStore.isDeepThinking,
-      return_thinking: chatStore.isShowThinking,
-    }
+  const requestData: ChatRequest = {
+    question: userMessage.content,
+    history: history.length > 0 ? history : undefined,
+    enable_thinking: chatStore.isDeepThinking,
+    return_thinking: chatStore.isShowThinking,
+  }
 
-    const response = await sendMessage(requestData)
-    inputText.value = ''
-
+  if (chatStore.isStreaming) {
+    // ===== 流式模式 =====
     const assistantMessage: Message = {
-      id: Date.now().toString(),
-      content: response.choices[0]?.message?.content ?? '（无响应内容）',
+      id: `stream-${Date.now()}`,
+      content: '',
       role: 'assistant',
       timestamp: Date.now(),
     }
-
     chatStore.addMessage(assistantMessage)
-    scrollToBottom()
-  } catch (error) {
-    console.error('发送消息失败:', error)
-    chatStore.addMessage({
-      id: Date.now().toString(),
-      content: '抱歉，发送失败了，请稍后再试。',
-      role: 'assistant',
-      timestamp: Date.now(),
-    })
-    scrollToBottom()
-  } finally {
-    chatStore.setLoading(false)
+    const msgId = assistantMessage.id
+
+    // 用临时变量累积内容，避免在回调里反复 find
+    let streamedContent = ''
+    sendMessageStream(
+      requestData,
+      (chunk: string) => {
+        streamedContent += chunk
+        chatStore.updateMessageContent(msgId, streamedContent)
+        scrollToBottom()
+      },
+      () => {
+        chatStore.setLoading(false)
+        scrollToBottom()
+      },
+      (error: Error) => {
+        console.error('流式传输错误:', error)
+        if (!streamedContent) {
+          chatStore.updateMessageContent(msgId, '抱歉，发送失败了，请稍后再试。')
+        }
+        chatStore.setLoading(false)
+        scrollToBottom()
+      },
+    )
+  } else {
+    // ===== 普通模式 =====
+    try {
+      const response = await sendMessage(requestData)
+      const assistantMessage: Message = {
+        id: Date.now().toString(),
+        content: response.choices[0]?.message?.content ?? '（无响应内容）',
+        role: 'assistant',
+        timestamp: Date.now(),
+      }
+      chatStore.addMessage(assistantMessage)
+      scrollToBottom()
+    } catch (error) {
+      console.error('发送消息失败:', error)
+      chatStore.addMessage({
+        id: Date.now().toString(),
+        content: '抱歉，发送失败了，请稍后再试。',
+        role: 'assistant',
+        timestamp: Date.now(),
+      })
+      scrollToBottom()
+    } finally {
+      chatStore.setLoading(false)
+    }
   }
 }
 
