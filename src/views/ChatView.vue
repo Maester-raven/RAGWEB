@@ -173,21 +173,26 @@ const scrollToBottom = async () => {
 }
 
 const handleSend = async () => {
+  // 1. 先检查输入和加载状态，若不满足直接返回
   if (!inputText.value.trim() || chatStore.isLoading) return
 
+  // 2. 立即设置加载状态，锁定后续调用（核心修复）
+  chatStore.setLoading(true)
+
+  // 3. 构建并添加用户消息
   const userMessage: Message = {
     id: Date.now().toString(),
     content: inputText.value,
     role: 'user',
     timestamp: Date.now(),
   }
-
   chatStore.addMessage(userMessage)
-  chatStore.setLoading(true)
+
+  // 4. 清空输入框并滚动到底部
   inputText.value = ''
   scrollToBottom()
 
-  // 构建历史记录：当前消息已加入 store，去掉最后一条（即刚发的用户消息），其余作为 history
+  // 5. 构建历史记录和请求参数
   const allMessages = chatStore.messages
   const history: HistoryItem[] = allMessages
     .slice(0, -1)
@@ -201,8 +206,9 @@ const handleSend = async () => {
     return_thinking: chatStore.isShowThinking,
   }
 
+  // 6. 区分流式/普通模式处理
   if (chatStore.isStreaming) {
-    // ===== 流式模式 =====
+    // 流式模式：先添加空的 AI 消息，再逐步更新内容
     const assistantMessage: Message = {
       id: `stream-${Date.now()}`,
       content: '',
@@ -211,9 +217,8 @@ const handleSend = async () => {
     }
     chatStore.addMessage(assistantMessage)
     const msgId = assistantMessage.id
-
-    // 用临时变量累积内容，避免在回调里反复 find
     let streamedContent = ''
+
     sendMessageStream(
       requestData,
       (chunk: string) => {
@@ -222,7 +227,7 @@ const handleSend = async () => {
         scrollToBottom()
       },
       () => {
-        chatStore.setLoading(false)
+        chatStore.setLoading(false) // 流式结束后重置加载状态
         scrollToBottom()
       },
       (error: Error) => {
@@ -230,12 +235,12 @@ const handleSend = async () => {
         if (!streamedContent) {
           chatStore.updateMessageContent(msgId, '抱歉，发送失败了，请稍后再试。')
         }
-        chatStore.setLoading(false)
+        chatStore.setLoading(false) // 错误时重置加载状态
         scrollToBottom()
-      },
+      }
     )
   } else {
-    // ===== 普通模式 =====
+    // 普通模式：等待接口响应后添加 AI 消息
     try {
       const response = await sendMessage(requestData)
       const assistantMessage: Message = {
@@ -256,7 +261,7 @@ const handleSend = async () => {
       })
       scrollToBottom()
     } finally {
-      chatStore.setLoading(false)
+      chatStore.setLoading(false) // 无论成功失败，都重置加载状态
     }
   }
 }
