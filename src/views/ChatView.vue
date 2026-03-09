@@ -144,26 +144,36 @@ import {onBeforeUnmount} from 'vue'
 const chatStore = useChatStore()
 const inputText = ref('')
 const isRecording = ref(false)
+const isRecordingToggling = ref(false)
 let recorder = null
 let audioStream = null   // 新增：用于保存音频流
 
 const toggleRecording = async () => {
-  if (isRecording.value) {
-    await stopRecording()
-  } else {
-    // 如果 recorder 或 audioStream 还存在，强制清理
-    if (recorder || audioStream) {
-      if (audioStream) {
-        audioStream.getTracks().forEach(track => track.stop())
-        audioStream = null
+  // 防止在录音状态切换过程中被并发重复触发
+  if (isRecordingToggling.value) {
+    return
+  }
+  isRecordingToggling.value = true
+  try {
+    if (isRecording.value) {
+      await stopRecording()
+    } else {
+      // 如果 recorder 或 audioStream 还存在，强制清理
+      if (recorder || audioStream) {
+        if (audioStream) {
+          audioStream.getTracks().forEach(track => track.stop())
+          audioStream = null
+        }
+        if (recorder) {
+          // 尝试停止 recorder（避免残留）
+          try { recorder.stopRecording() } catch (e) {}
+          recorder = null
+        }
       }
-      if (recorder) {
-        // 尝试停止 recorder（避免残留）
-        try { recorder.stopRecording() } catch (e) {}
-        recorder = null
-      }
+      await startRecording()
     }
-    await startRecording()
+  } finally {
+    isRecordingToggling.value = false
   }
 }
 
