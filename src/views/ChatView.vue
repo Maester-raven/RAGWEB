@@ -221,7 +221,7 @@ const sendAudioToWhisper = async (audioBlob) => {
   const formData = new FormData()
   formData.append('file', audioBlob, 'recording.wav')
   try {
-    const WHISPER_URL = import.meta.env.VITE_WHISPER_URL || 'http://localhost:8000/transcribe';
+    const WHISPER_URL = (import.meta as any).env.VITE_WHISPER_URL || 'http://localhost:8000/transcribe';
     const response = await fetch(WHISPER_URL, {
       method: 'POST',
       body: formData,
