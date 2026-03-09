@@ -106,6 +106,23 @@
           </button>
           <textarea v-model="inputText" placeholder="发送消息给 AI 助手..." @keydown.enter.exact.prevent="handleSend"
             rows="1"></textarea>
+          <!-- 新增的麦克风按钮 -->
+          <button 
+            class="send-btn" 
+            style="margin-right: 8px;"
+            :class="{ 'recording': isRecording }" 
+            @click="toggleRecording" 
+            :title="isRecording ? '停止录音' : '语音输入'"
+          >
+            <svg v-if="!isRecording" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+              <path d="M12 2C10.9 2 10 2.9 10 4V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V4C14 2.9 13.1 2 12 2Z" fill="currentColor"/>
+              <path d="M19 10V12C19 15.9 15.9 19 12 19C8.1 19 5 15.9 5 12V10H7V12C7 14.8 9.2 17 12 17C14.8 17 17 14.8 17 12V10H19Z" fill="currentColor"/>
+              <path d="M11 19V21H13V19H11Z" fill="currentColor"/>
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
+              <rect x="6" y="6" width="12" height="12" fill="currentColor" />
+            </svg>
+          </button>
           <button class="send-btn" @click="handleSend" :disabled="!inputText.trim() || chatStore.isLoading"
             title="发送 (Enter)">
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -123,10 +140,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useChatStore } from '../store/chat'
 import { sendMessage, sendMessageStream } from '../api/chat'
 import type { Message, ChatRequest, HistoryItem } from '../types'
+import RecordRTC from 'recordrtc'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 
@@ -140,6 +158,145 @@ const renderMarkdown = (content: string): string => {
 
 const chatStore = useChatStore()
 const inputText = ref('')
+const isRecording = ref(false)
+const isRecordingToggling = ref(false)
+let recorder = null
+let audioStream = null   // 新增：用于保存音频流
+
+const toggleRecording = async () => {
+  // 防止在录音状态切换过程中被并发重复触发
+  if (isRecordingToggling.value) {
+    return
+  }
+  isRecordingToggling.value = true
+  try {
+    if (isRecording.value) {
+      await stopRecording()
+    } else {
+      // 如果 recorder 或 audioStream 还存在，强制清理
+      if (recorder || audioStream) {
+        if (audioStream) {
+          audioStream.getTracks().forEach(track => track.stop())
+          audioStream = null
+        }
+        if (recorder) {
+          // 尝试停止 recorder（避免残留）
+          try { recorder.stopRecording() } catch (e) {}
+          recorder = null
+        }
+      }
+      await startRecording()
+    }
+  } finally {
+    isRecordingToggling.value = false
+  }
+}
+
+const startRecording = async () => {
+  //console.log('startRecording called')
+  try {
+    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true })   // 保存到 audioStream
+    //console.log('Got stream')
+    recorder = new RecordRTC(audioStream, {   // 使用 audioStream 创建 recorder
+      type: 'audio',
+      mimeType: 'audio/wav',
+      recorderType: RecordRTC.StereoAudioRecorder,
+      numberOfAudioChannels: 1,
+      desiredSampRate: 16000,
+      checkForInactive: 500,
+    })
+    recorder.startRecording()
+    isRecording.value = true
+    //console.log('Recording started')
+  } catch (err) {
+    console.error('startRecording error:', err)
+    alert('无法访问麦克风，请检查权限')
+  }
+}
+
+const stopRecording = () => {
+  //console.log('stopRecording called')
+  return new Promise((resolve) => {
+    if (!recorder) {
+      //console.log('No recorder, resolving')
+      return resolve()
+    }
+    recorder.stopRecording(async () => {
+      //console.log('Recording stopped')
+      const blob = recorder.getBlob()
+      const text = await sendAudioToWhisper(blob)
+      if (text) {
+        inputText.value = text
+        // handleSend() // 可取消注释自动发送
+      }
+      // 关闭音频轨道（使用 audioStream）
+      if (audioStream) {
+        audioStream.getTracks().forEach(track => track.stop())
+        audioStream = null
+      }
+      recorder = null
+      isRecording.value = false
+      //console.log('Cleanup done')
+      resolve()
+    })
+  })
+}
+
+const sendAudioToWhisper = async (audioBlob) => {
+  const formData = new FormData()
+
+  // 使用 AbortController 为 fetch 添加超时控制，避免网络异常时长时间挂起
+  const controller = new AbortController()
+  // 可以根据需要调整超时时长（毫秒）
+  const TIMEOUT_MS = 15000
+  const timeoutId = setTimeout(() => {
+    controller.abort()
+  }, TIMEOUT_MS)
+
+  try {
+    const WHISPER_URL = import.meta.env.VITE_WHISPER_URL || 'http://localhost:8000/transcribe';
+    console.log('Whisper URL:', WHISPER_URL);  // 添加这行python ~/whisper-service/main.py
+    const response = await fetch(WHISPER_URL, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
+    }
+
+    const data = await response.json()
+    if (data.text) {
+      return data.text
+    } else {
+      chatStore.addMessage({
+        id: Date.now().toString(),
+        content: '语音识别失败：' + (data.error || '未知错误'),
+        role: 'assistant',
+        timestamp: Date.now(),
+      })
+      return ''
+    }
+  } catch (err) {
+    console.error('语音识别服务错误:', err);
+    // 区分超时取消与其他错误，提示信息更明确
+    const message =
+      err && err.name === 'AbortError'
+        ? '语音识别请求超时，请稍后重试。'
+        : '无法连接到语音识别服务，请确保服务已启动。'
+    chatStore.addMessage({
+      id: Date.now().toString(),
+      content: message,
+      role: 'assistant',
+      timestamp: Date.now(),
+    })
+    return ''
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
 const messageListRef = ref<HTMLElement | null>(null)
 
 const getThinkContent = (content: string) => {
@@ -277,6 +434,22 @@ onMounted(() => {
   }
   scrollToBottom()
 })
+
+onBeforeUnmount(() => {
+  // 如果正在录音，立即停止并关闭轨道
+  if (recorder && isRecording.value) {
+    try {
+      recorder.stopRecording(); // 尝试停止录制（可能来不及完成，但尽力）
+    } catch (e) {}
+  }
+  // 无论是否正在录音，关闭音频轨道
+  if (audioStream) {
+    audioStream.getTracks().forEach(track => track.stop());
+    audioStream = null;
+  }
+  recorder = null;
+  isRecording.value = false;
+});
 
 watch(
   () => chatStore.isDarkTheme,
