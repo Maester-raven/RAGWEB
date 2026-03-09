@@ -68,13 +68,19 @@
         <div v-for="message in chatStore.messages" :key="message.id" :class="['message-row', message.role]">
           <div v-if="message.role === 'assistant'" class="avatar assistant-avatar">AI</div>
           <div class="bubble-wrapper">
-            <div class="message-bubble">{{ message.content }}</div>
+            <div class="thinking-context"
+              v-if="message.role === 'assistant' && chatStore.isDeepThinking && chatStore.isShowThinking && message.content.includes('<think>')">
+              {{ getThinkContent(message.content) }}
+            </div>
+            <div class="message-bubble" :class="{ 'markdown-body': message.role === 'assistant' }"
+              v-if="message.role === 'assistant'" v-html="renderMarkdown(getDisplayContent(message.content))"></div>
+            <div class="message-bubble" v-else>{{ getDisplayContent(message.content) }}</div>
           </div>
           <div v-if="message.role === 'user'" class="avatar user-avatar">你</div>
         </div>
 
-        <!-- 加载动画 -->
-        <div v-if="chatStore.isLoading" class="message-row assistant">
+        <!-- 加载动画（流式模式下由气泡本身展示进度，不再显示三点动画）-->
+        <div v-if="chatStore.isLoading && !chatStore.isStreaming" class="message-row assistant">
           <div class="avatar assistant-avatar">AI</div>
           <div class="bubble-wrapper">
             <div class="message-bubble loading-bubble">
@@ -134,12 +140,21 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { ref, onMounted, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useChatStore } from '../store/chat'
-import { sendMessage } from '../api/chat'
-import type { Message, ChatRequest } from '../types'
+import { sendMessage, sendMessageStream } from '../api/chat'
+import type { Message, ChatRequest, HistoryItem } from '../types'
 import RecordRTC from 'recordrtc'
-import {onBeforeUnmount} from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
+
+marked.setOptions({ breaks: true, gfm: true })
+
+const renderMarkdown = (content: string): string => {
+  if (!content) return ''
+  const raw = marked.parse(content) as string
+  return DOMPurify.sanitize(raw)
+}
 
 const chatStore = useChatStore()
 const inputText = ref('')
@@ -284,6 +299,29 @@ const sendAudioToWhisper = async (audioBlob) => {
 
 const messageListRef = ref<HTMLElement | null>(null)
 
+const getThinkContent = (content: string) => {
+  const start = content.indexOf('<think>')
+  if (start === -1) return ''
+  const end = content.indexOf('</think>', start)
+  if (end === -1) {
+    // </think> 尚未到达，流式进行中，显示 <think> 之后的所有内容
+    return content.slice(start + 7).trim()
+  }
+  return content.slice(start + 7, end).trim()
+}
+
+const getDisplayContent = (content: string) => {
+  const start = content.indexOf('<think>')
+  if (start === -1) return content.trim()
+  const end = content.indexOf('</think>', start)
+  if (end === -1) {
+    // 仍在思考中，普通气泡只显示 <think> 之前的内容（通常为空）
+    return content.slice(0, start).trim()
+  }
+  // <think> 之前 + </think> 之后的内容合并显示
+  return (content.slice(0, start) + content.slice(end + 8)).trim()
+}
+
 const scrollToBottom = async () => {
   await nextTick()
   if (messageListRef.value) {
@@ -292,48 +330,96 @@ const scrollToBottom = async () => {
 }
 
 const handleSend = async () => {
+  // 1. 先检查输入和加载状态，若不满足直接返回
   if (!inputText.value.trim() || chatStore.isLoading) return
 
+  // 2. 立即设置加载状态，锁定后续调用（核心修复）
+  chatStore.setLoading(true)
+
+  // 3. 构建并添加用户消息
   const userMessage: Message = {
     id: Date.now().toString(),
     content: inputText.value,
     role: 'user',
     timestamp: Date.now(),
   }
-
   chatStore.addMessage(userMessage)
-  chatStore.setLoading(true)
+
+  // 4. 清空输入框并滚动到底部
+  inputText.value = ''
   scrollToBottom()
 
-  try {
-    const requestData: ChatRequest & { deepThinking?: boolean } = {
-      messages: chatStore.messages,
-      ...(chatStore.isDeepThinking && { deepThinking: true }),
-    }
+  // 5. 构建历史记录和请求参数
+  const allMessages = chatStore.messages
+  const history: HistoryItem[] = allMessages
+    .slice(0, -1)
+    .filter((m) => m.id !== 'welcome')
+    .map((m) => ({ role: m.role, content: m.content }))
 
-    const response = await sendMessage(requestData)
+  const requestData: ChatRequest = {
+    question: userMessage.content,
+    history: history.length > 0 ? history : undefined,
+    enable_thinking: chatStore.isDeepThinking,
+    return_thinking: chatStore.isShowThinking,
+  }
 
+  // 6. 区分流式/普通模式处理
+  if (chatStore.isStreaming) {
+    // 流式模式：先添加空的 AI 消息，再逐步更新内容
     const assistantMessage: Message = {
-      id: response.id,
-      content: response.content,
+      id: `stream-${Date.now()}`,
+      content: '',
       role: 'assistant',
       timestamp: Date.now(),
     }
-
     chatStore.addMessage(assistantMessage)
-    scrollToBottom()
-  } catch (error) {
-    console.error('发送消息失败:', error)
-    chatStore.addMessage({
-      id: Date.now().toString(),
-      content: '抱歉，发送失败了，请稍后再试。',
-      role: 'assistant',
-      timestamp: Date.now(),
-    })
-    scrollToBottom()
-  } finally {
-    chatStore.setLoading(false)
-    inputText.value = ''
+    const msgId = assistantMessage.id
+    let streamedContent = ''
+
+    sendMessageStream(
+      requestData,
+      (chunk: string) => {
+        streamedContent += chunk
+        chatStore.updateMessageContent(msgId, streamedContent)
+        scrollToBottom()
+      },
+      () => {
+        chatStore.setLoading(false) // 流式结束后重置加载状态
+        scrollToBottom()
+      },
+      (error: Error) => {
+        console.error('流式传输错误:', error)
+        if (!streamedContent) {
+          chatStore.updateMessageContent(msgId, '抱歉，发送失败了，请稍后再试。')
+        }
+        chatStore.setLoading(false) // 错误时重置加载状态
+        scrollToBottom()
+      }
+    )
+  } else {
+    // 普通模式：等待接口响应后添加 AI 消息
+    try {
+      const response = await sendMessage(requestData)
+      const assistantMessage: Message = {
+        id: Date.now().toString(),
+        content: response.choices[0]?.message?.content ?? '（无响应内容）',
+        role: 'assistant',
+        timestamp: Date.now(),
+      }
+      chatStore.addMessage(assistantMessage)
+      scrollToBottom()
+    } catch (error) {
+      console.error('发送消息失败:', error)
+      chatStore.addMessage({
+        id: Date.now().toString(),
+        content: '抱歉，发送失败了，请稍后再试。',
+        role: 'assistant',
+        timestamp: Date.now(),
+      })
+      scrollToBottom()
+    } finally {
+      chatStore.setLoading(false) // 无论成功失败，都重置加载状态
+    }
   }
 }
 
@@ -341,7 +427,7 @@ onMounted(() => {
   if (chatStore.messages.length === 0) {
     chatStore.addMessage({
       id: 'welcome',
-      content: '你好！我是 AI 助手，有什么可以帮助你的吗？',
+      content: '您好！我是 AI 助手，有什么我能帮您的吗？',
       role: 'assistant',
       timestamp: Date.now(),
     })
@@ -765,6 +851,19 @@ watch(
   max-width: 100%;
 }
 
+.thinking-context {
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background-color: var(--accent-light);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
 .message-bubble {
   padding: 12px 16px;
   border-radius: 16px;
@@ -786,6 +885,110 @@ watch(
   color: var(--ai-bubble-text);
   border-bottom-left-radius: 4px;
   border: 1px solid var(--border);
+}
+
+/* ===== Markdown 渲染样式 ===== */
+.message-bubble.markdown-body {
+  white-space: normal;
+}
+
+.message-bubble.markdown-body :deep(p) {
+  margin: 0 0 0.6em;
+}
+
+.message-bubble.markdown-body :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.message-bubble.markdown-body :deep(h1),
+.message-bubble.markdown-body :deep(h2),
+.message-bubble.markdown-body :deep(h3),
+.message-bubble.markdown-body :deep(h4) {
+  margin: 0.8em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.message-bubble.markdown-body :deep(ul),
+.message-bubble.markdown-body :deep(ol) {
+  margin: 0.4em 0 0.6em;
+  padding-left: 1.4em;
+}
+
+.message-bubble.markdown-body :deep(li) {
+  margin-bottom: 0.25em;
+}
+
+.message-bubble.markdown-body :deep(code) {
+  font-family: 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  font-size: 0.875em;
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  background-color: rgba(0, 0, 0, 0.06);
+}
+
+.message-bubble.markdown-body :deep(pre) {
+  margin: 0.6em 0;
+  border-radius: 8px;
+  overflow-x: auto;
+  background-color: #1e1e2e;
+}
+
+.message-bubble.markdown-body :deep(pre code) {
+  display: block;
+  padding: 1em;
+  background: transparent;
+  color: #cdd6f4;
+  font-size: 0.85em;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.message-bubble.markdown-body :deep(blockquote) {
+  margin: 0.5em 0;
+  padding: 0.4em 0.8em;
+  border-left: 3px solid var(--accent);
+  background-color: var(--accent-light);
+  border-radius: 0 4px 4px 0;
+  color: var(--text-secondary);
+}
+
+.message-bubble.markdown-body :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.6em 0;
+  font-size: 0.9em;
+}
+
+.message-bubble.markdown-body :deep(th),
+.message-bubble.markdown-body :deep(td) {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.message-bubble.markdown-body :deep(th) {
+  background-color: var(--accent-light);
+  font-weight: 600;
+}
+
+.message-bubble.markdown-body :deep(a) {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.message-bubble.markdown-body :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.8em 0;
+}
+
+.message-bubble.markdown-body :deep(strong) {
+  font-weight: 700;
+}
+
+.message-bubble.markdown-body :deep(em) {
+  font-style: italic;
 }
 
 /* ===== 加载气泡 ===== */
@@ -958,21 +1161,4 @@ textarea::placeholder {
     max-width: 90%;
   }
 }
-
-#麦克风按钮
-/* 麦克风按钮 - 默认与发送按钮完全一致 */
-
-/* 录音状态 - 覆盖发送按钮样式 */
-.send-btn.recording {
-  background: #ff4444;  /* 纯红色背景 */
-  box-shadow: 0 2px 8px rgba(255, 68, 68, 0.35);
-  color: white;  /* 图标变为白色 */
-}
-
-.send-btn.recording:hover {
-  background: #ff6666;  /* 悬停时稍亮 */
-  transform: translateY(-1px);
-  box-shadow: 0 4px 14px rgba(255, 68, 68, 0.5);
-}
-
 </style>

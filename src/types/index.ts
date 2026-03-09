@@ -1,17 +1,7 @@
-export interface Message {
-  id: string
-  content: string
-  role: 'user' | 'assistant'
-  timestamp: number
-}
+// src/types/index.ts
+// 统一导出chat.ts中的所有类型，确保项目中只有一份类型定义
+export * from './chat'
 
-export interface ChatRequest {
-  messages: Message[]
-  model?: string
-}
-
-export interface ChatResponse {
-  id: string
-  content: string
-  role: 'assistant'
-}
+// 如果你有其他类型文件（如user.ts、api.ts），也可以在这里统一导出：
+// export * from './user';
+// export * from './api';
