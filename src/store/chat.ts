@@ -1,29 +1,31 @@
 import { defineStore } from 'pinia'
-import type { Message } from '../types/chat' // 修正类型导入路径
-// 导入数据库删除接口
-import { deleteChatRecords } from '../api/chat'
+import type { Message } from '../types/chat'
+import { deleteChatRecords, getChatRecords, getSessionsList } from '../api/chat'
+
+type Session = { id: string; title: string; messages: Message[]; loaded: boolean }
 
 export const useChatStore = defineStore('chat', {
   state: () => ({
     messages: [] as Message[],
     isLoading: false,
-    // 默认启用浅色模式
     isDarkTheme: false,
     isDeepThinking: false,
-    isShowThinking: true,// 思考过程显示控制
-    isStreaming: false,  // 流式输出开关
-    sessions: [
-      { id: '1', title: '新对话', messages: [] as Message[] },
-    ],
-    currentSessionId: '1',
+    isShowThinking: true,
+    isStreaming: false,
+    sessions: [] as Session[],
+    currentSessionId: '',
+    currentUserId: localStorage.getItem('chat_user_id') ?? '',
   }),
   actions: {
+    setUserId(userId: string) {
+      this.currentUserId = userId
+      localStorage.setItem('chat_user_id', userId)
+    },
     addMessage(message: Message) {
       this.messages.push(message)
       const session = this.sessions.find(s => s.id === this.currentSessionId)
       if (session) {
         session.messages.push(message)
-        // 更新会话标题为第一条用户消息
         if (message.role === 'user' && session.title === '新对话') {
           session.title = message.content.slice(0, 20) + (message.content.length > 20 ? '...' : '')
         }
@@ -32,16 +34,14 @@ export const useChatStore = defineStore('chat', {
     setLoading(loading: boolean) {
       this.isLoading = loading
     },
-    // 改造：清空消息（同步数据库）
     async clearMessages() {
       this.messages = []
-      // 清空当前会话的本地消息
       const session = this.sessions.find(s => s.id === this.currentSessionId)
       if (session) {
         session.messages = []
+        session.loaded = true
       }
-      // 同步删除数据库中的会话记录（失败仅打印错误）
-      await deleteChatRecords(this.currentSessionId).catch(err => {
+      await deleteChatRecords(this.currentSessionId, this.currentUserId).catch(err => {
         console.error('清空数据库会话记录失败:', err)
       })
     },
@@ -65,36 +65,83 @@ export const useChatStore = defineStore('chat', {
       if (sessionMsg) sessionMsg.content = content
     },
     createNewSession() {
-      const newSession = {
+      const newSession: Session = {
         id: Date.now().toString(),
         title: '新对话',
-        messages: [] as Message[],
+        messages: [],
+        loaded: true,
       }
-      this.sessions.push(newSession)
+      this.sessions.unshift(newSession)
       this.currentSessionId = newSession.id
       this.messages = []
     },
-    switchSession(sessionId: string) {
+    async switchSession(sessionId: string) {
       const session = this.sessions.find(s => s.id === sessionId)
-      if (session) {
-        this.currentSessionId = sessionId
+      if (!session) return
+      this.currentSessionId = sessionId
+      if (!session.loaded) {
+        await this.loadMessagesForSession(sessionId)
+      } else {
         this.messages = session.messages
       }
     },
-    // 新增：删除会话（同步数据库）
+    async loadMessagesForSession(sessionId: string) {
+      try {
+        const res = await getChatRecords(sessionId, this.currentUserId)
+        const records: { id: number; role: 'user' | 'assistant'; content: string; create_time: string }[] = res.data.data
+        const messages: Message[] = records.map(r => ({
+          id: String(r.id),
+          role: r.role,
+          content: r.content,
+          timestamp: new Date(r.create_time).getTime(),
+        }))
+        const session = this.sessions.find(s => s.id === sessionId)
+        if (session) {
+          session.messages = messages
+          session.loaded = true
+        }
+        this.messages = messages
+      } catch (err) {
+        console.error('加载会话消息失败:', err)
+        this.messages = []
+      }
+    },
+    async loadSessionsFromDB() {
+      if (!this.currentUserId) return
+      try {
+        const res = await getSessionsList(this.currentUserId)
+        const dbSessions: { session_id: string; first_message: string | null; last_time: string }[] = res.data.data
+        if (dbSessions.length === 0) {
+          this.sessions = [{ id: Date.now().toString(), title: '新对话', messages: [], loaded: true }]
+          this.currentSessionId = this.sessions[0]!.id
+          this.messages = []
+          return
+        }
+        this.sessions = dbSessions.map(s => ({
+          id: s.session_id,
+          title: s.first_message
+            ? s.first_message.slice(0, 20) + (s.first_message.length > 20 ? '...' : '')
+            : '新对话',
+          messages: [],
+          loaded: false,
+        }))
+        this.currentSessionId = this.sessions[0]!.id
+        await this.loadMessagesForSession(this.sessions[0]!.id)
+      } catch (err) {
+        console.error('加载会话列表失败:', err)
+        if (this.sessions.length === 0) {
+          this.createNewSession()
+        }
+      }
+    },
     async deleteSession(sessionId: string) {
-      // 1. 删除数据库中的会话记录
-      await deleteChatRecords(sessionId).catch(err => {
+      await deleteChatRecords(sessionId, this.currentUserId).catch(err => {
         console.error('删除数据库会话记录失败:', err)
       })
-      // 2. 删除本地会话
       this.sessions = this.sessions.filter(s => s.id !== sessionId)
-      // 3. 切换到第一个会话（避免无会话，使用非空断言!修复TS错误）
       if (this.sessions.length > 0) {
-        this.currentSessionId = this.sessions[0]!.id
-        this.messages = this.sessions[0]!.messages
+        await this.switchSession(this.sessions[0]!.id)
       } else {
-        // 无会话时创建默认会话
         this.createNewSession()
       }
     },

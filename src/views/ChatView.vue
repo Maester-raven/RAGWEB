@@ -28,6 +28,16 @@
       </div>
 
       <div class="sidebar-footer">
+        <!-- 用户信息 -->
+        <div class="user-info-bar" @click="openChangeUserModal" title="点击切换用户">
+          <div class="user-avatar-small">{{ chatStore.currentUserId.charAt(0).toUpperCase() }}</div>
+          <span class="user-name-text">{{ chatStore.currentUserId }}</span>
+          <svg viewBox="0 0 24 24" fill="none" width="12" height="12"
+            style="margin-left:auto;opacity:0.5;flex-shrink:0">
+            <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </div>
         <button class="theme-toggle-btn" @click="chatStore.toggleTheme()">
           <span class="theme-icon">
             <svg v-if="chatStore.isDarkTheme" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
@@ -107,17 +117,16 @@
           <textarea v-model="inputText" placeholder="发送消息给 AI 助手..." @keydown.enter.exact.prevent="handleSend"
             rows="1"></textarea>
           <!-- 新增的麦克风按钮 -->
-          <button 
-            class="send-btn" 
-            style="margin-right: 8px;"
-            :class="{ 'recording': isRecording }" 
-            @click="toggleRecording" 
-            :title="isRecording ? '停止录音' : '语音输入'"
-          >
-            <svg v-if="!isRecording" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
-              <path d="M12 2C10.9 2 10 2.9 10 4V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V4C14 2.9 13.1 2 12 2Z" fill="currentColor"/>
-              <path d="M19 10V12C19 15.9 15.9 19 12 19C8.1 19 5 15.9 5 12V10H7V12C7 14.8 9.2 17 12 17C14.8 17 17 14.8 17 12V10H19Z" fill="currentColor"/>
-              <path d="M11 19V21H13V19H11Z" fill="currentColor"/>
+          <button class="send-btn" style="margin-right: 8px;" :class="{ 'recording': isRecording }"
+            @click="toggleRecording" :title="isRecording ? '停止录音' : '语音输入'">
+            <svg v-if="!isRecording" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="16"
+              height="16">
+              <path d="M12 2C10.9 2 10 2.9 10 4V12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12V4C14 2.9 13.1 2 12 2Z"
+                fill="currentColor" />
+              <path
+                d="M19 10V12C19 15.9 15.9 19 12 19C8.1 19 5 15.9 5 12V10H7V12C7 14.8 9.2 17 12 17C14.8 17 17 14.8 17 12V10H19Z"
+                fill="currentColor" />
+              <path d="M11 19V21H13V19H11Z" fill="currentColor" />
             </svg>
             <svg v-else viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" width="16" height="16">
               <rect x="6" y="6" width="12" height="12" fill="currentColor" />
@@ -136,6 +145,24 @@
         <div class="input-hint">按 Enter 发送，Shift+Enter 换行</div>
       </div>
     </main>
+
+    <!-- 用户设置弹窗 -->
+    <div v-if="showUserModal" class="modal-overlay">
+      <div class="modal-box">
+        <div class="modal-title">{{ isChangingUser ? '切换用户' : '欢迎使用 AI 助手' }}</div>
+        <p class="modal-desc">
+          {{ isChangingUser ? '输入用户名以切换到另一账户的对话记录' : '请输入您的用户名，用于保存和恢复对话记录' }}
+        </p>
+        <input class="modal-input" v-model="userIdInput" :placeholder="isChangingUser ? '输入用户名' : '输入用户名（如：张三）'"
+          @keydown.enter="confirmUserId" maxlength="30" />
+        <div class="modal-actions">
+          <button v-if="isChangingUser" class="modal-cancel-btn" @click="showUserModal = false">取消</button>
+          <button class="modal-confirm-btn" :disabled="!userIdInput.trim()" @click="confirmUserId">
+            {{ isChangingUser ? '确认切换' : '开始使用' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -163,6 +190,38 @@ const renderMarkdown = (content: string): string => {
 
 const chatStore = useChatStore()
 const inputText = ref('')
+const showUserModal = ref(false)
+const isChangingUser = ref(false)
+const userIdInput = ref('')
+
+const openChangeUserModal = () => {
+  userIdInput.value = chatStore.currentUserId
+  isChangingUser.value = true
+  showUserModal.value = true
+}
+
+const initAfterLogin = async () => {
+  await chatStore.loadSessionsFromDB()
+  if (chatStore.messages.length === 0) {
+    chatStore.addMessage({
+      id: 'welcome',
+      content: '您好！我是 AI 助手，有什么我能帮您的吗？',
+      role: 'assistant',
+      timestamp: Date.now(),
+    })
+  }
+  scrollToBottom()
+}
+
+const confirmUserId = async () => {
+  if (!userIdInput.value.trim()) return
+  chatStore.setUserId(userIdInput.value.trim())
+  showUserModal.value = false
+  isChangingUser.value = false
+  userIdInput.value = ''
+  await initAfterLogin()
+}
+
 const isRecording = ref(false)
 const isRecordingToggling = ref(false)
 let recorder = null
@@ -186,7 +245,7 @@ const toggleRecording = async () => {
         }
         if (recorder) {
           // 尝试停止 recorder（避免残留）
-          try { recorder.stopRecording() } catch (e) {}
+          try { recorder.stopRecording() } catch (e) { }
           recorder = null
         }
       }
@@ -358,7 +417,7 @@ const handleSend = async () => {
   // ===== 新增：保存用户消息到数据库 =====
   try {
     const userChatRecord: ChatRecord = {
-      user_id: 'default_user',
+      user_id: chatStore.currentUserId,
       session_id: chatStore.currentSessionId,
       role: 'user',
       content: userMessage.content
@@ -407,7 +466,7 @@ const handleSend = async () => {
         // ===== 新增：保存AI消息（流式）到数据库 =====
         try {
           const assistantChatRecord: ChatRecord = {
-            user_id: 'default_user',
+            user_id: chatStore.currentUserId,
             session_id: chatStore.currentSessionId,
             role: 'assistant',
             content: streamedContent
@@ -446,7 +505,7 @@ const handleSend = async () => {
       // ===== 新增：保存AI消息（普通）到数据库 =====
       try {
         const assistantChatRecord: ChatRecord = {
-          user_id: 'default_user',
+          user_id: chatStore.currentUserId,
           session_id: chatStore.currentSessionId,
           role: 'assistant',
           content: assistantMessage.content
@@ -472,16 +531,12 @@ const handleSend = async () => {
   }
 }
 
-onMounted(() => {
-  if (chatStore.messages.length === 0) {
-    chatStore.addMessage({
-      id: 'welcome',
-      content: '您好！我是 AI 助手，有什么我能帮您的吗？',
-      role: 'assistant',
-      timestamp: Date.now(),
-    })
+onMounted(async () => {
+  if (!chatStore.currentUserId) {
+    showUserModal.value = true
+  } else {
+    await initAfterLogin()
   }
-  scrollToBottom()
 })
 
 onBeforeUnmount(() => {
@@ -489,7 +544,7 @@ onBeforeUnmount(() => {
   if (recorder && isRecording.value) {
     try {
       recorder.stopRecording(); // 尝试停止录制（可能来不及完成，但尽力）
-    } catch (e) {}
+    } catch (e) { }
   }
   // 无论是否正在录音，关闭音频轨道
   if (audioStream) {
@@ -1209,5 +1264,137 @@ textarea::placeholder {
   .message-row {
     max-width: 90%;
   }
+}
+
+/* ===== 用户信息栏 ===== */
+.user-info-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 0.2s;
+  overflow: hidden;
+}
+
+.user-info-bar:hover {
+  background: var(--accent-light);
+}
+
+.user-avatar-small {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #F3AF27, #FFD253);
+  color: #554F4C;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.user-name-text {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== 用户设置弹窗 ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-box {
+  background: var(--surface);
+  border-radius: 16px;
+  padding: 32px 28px 24px;
+  width: 360px;
+  max-width: 90vw;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.modal-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.modal-input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: var(--chat-bg);
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.2s;
+}
+
+.modal-input:focus {
+  border-color: var(--accent);
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.modal-confirm-btn {
+  padding: 9px 20px;
+  background: linear-gradient(135deg, #F3AF27, #FFD253);
+  color: #554F4C;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.modal-confirm-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.modal-cancel-btn {
+  padding: 9px 16px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.modal-cancel-btn:hover {
+  background: var(--accent-light);
 }
 </style>

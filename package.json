@@ -27,6 +27,7 @@
     "@types/node": "^24.11.0",
     "@vitejs/plugin-vue": "^6.0.4",
     "@vue/tsconfig": "^0.8.1",
+    "mysql2": "^3.19.1",
     "npm-run-all2": "^8.0.4",
     "prettier": "3.8.1",
     "typescript": "~5.9.3",

@@ -114,3 +114,11 @@ export const deleteChatRecords = async (session_id: string, user_id?: string) =>
   })
 }
 
+/**
+ * 获取用户的所有会话列表
+ * @param user_id 用户ID
+ */
+export const getSessionsList = async (user_id: string) => {
+  return chatDbApi.get(`/sessions/${encodeURIComponent(user_id)}`)
+}
+
