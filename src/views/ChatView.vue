@@ -306,8 +306,10 @@ const stopRecording = () => {
   })
 }
 
-const sendAudioToWhisper = async (audioBlob) => {
+const sendAudioToWhisper = async (audioBlob: Blob): Promise<string> => {
   const formData = new FormData()
+  // 后端通常通过 file 字段接收 UploadFile
+  formData.append('file', audioBlob, `recording-${Date.now()}.wav`)
 
   // 使用 AbortController 为 fetch 添加超时控制，避免网络异常时长时间挂起
   const controller = new AbortController()
@@ -318,16 +320,16 @@ const sendAudioToWhisper = async (audioBlob) => {
   }, TIMEOUT_MS)
 
   try {
-    const WHISPER_URL = import.meta.env.VITE_WHISPER_URL || 'http://localhost:8000/transcribe';
-    console.log('Whisper URL:', WHISPER_URL);  // 添加这行python ~/whisper-service/main.py
+    const WHISPER_URL = 'http://100.65.151.85:8000/transcribe'
+    console.log('Whisper URL:', WHISPER_URL)
     const response = await fetch(WHISPER_URL, {
       method: 'POST',
       body: formData,
       signal: controller.signal,
-    });
+    })
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`HTTP ${response.status}: ${errorText}`);
+      const errorText = await response.text()
+      throw new Error(`HTTP ${response.status}: ${errorText}`)
     }
 
     const data = await response.json()
@@ -342,11 +344,12 @@ const sendAudioToWhisper = async (audioBlob) => {
       })
       return ''
     }
-  } catch (err) {
-    console.error('语音识别服务错误:', err);
+  } catch (err: unknown) {
+    console.error('语音识别服务错误:', err)
     // 区分超时取消与其他错误，提示信息更明确
+    const isAbortError = err instanceof DOMException && err.name === 'AbortError'
     const message =
-      err && err.name === 'AbortError'
+      isAbortError
         ? '语音识别请求超时，请稍后重试。'
         : '无法连接到语音识别服务，请确保服务已启动。'
     chatStore.addMessage({
