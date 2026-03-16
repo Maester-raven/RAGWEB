@@ -25,7 +25,11 @@ export const useChatStore = defineStore('chat', {
       this.messages.push(message)
       const session = this.sessions.find(s => s.id === this.currentSessionId)
       if (session) {
-        session.messages.push(message)
+        // 只有当 session.messages 与 this.messages 不是同一个引用时才单独 push，
+        // 避免 switchSession 后两个变量指向同一数组导致重复添加
+        if (session.messages !== this.messages) {
+          session.messages.push(message)
+        }
         if (message.role === 'user' && session.title === '新对话') {
           session.title = message.content.slice(0, 20) + (message.content.length > 20 ? '...' : '')
         }

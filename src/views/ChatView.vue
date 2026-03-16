@@ -224,8 +224,8 @@ const confirmUserId = async () => {
 
 const isRecording = ref(false)
 const isRecordingToggling = ref(false)
-let recorder = null
-let audioStream = null   // 新增：用于保存音频流
+let recorder: RecordRTC | null = null
+let audioStream: MediaStream | null = null   // 新增：用于保存音频流
 
 const toggleRecording = async () => {
   // 防止在录音状态切换过程中被并发重复触发
@@ -267,7 +267,7 @@ const startRecording = async () => {
       recorderType: RecordRTC.StereoAudioRecorder,
       numberOfAudioChannels: 1,
       desiredSampRate: 16000,
-      checkForInactive: 500,
+      checkForInactiveTracks: true,
     })
     recorder.startRecording()
     isRecording.value = true
@@ -280,14 +280,15 @@ const startRecording = async () => {
 
 const stopRecording = () => {
   //console.log('stopRecording called')
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     if (!recorder) {
       //console.log('No recorder, resolving')
       return resolve()
     }
-    recorder.stopRecording(async () => {
+    const currentRecorder = recorder
+    currentRecorder.stopRecording(async () => {
       //console.log('Recording stopped')
-      const blob = recorder.getBlob()
+      const blob = currentRecorder.getBlob()
       const text = await sendAudioToWhisper(blob)
       if (text) {
         inputText.value = text
