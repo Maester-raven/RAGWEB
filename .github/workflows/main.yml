@@ -35,8 +35,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: lts/*
-          # 修改点 1: 将 cache 从 'npm' 改为 'pnpm'
-          cache: 'pnpm'
           
       - name: Install pnpm
         uses: pnpm/action-setup@v4
