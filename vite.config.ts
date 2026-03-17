@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
   const proxyTarget = env.VITE_PROXY_TARGET || 'http://localhost:8000'
 
   return {
+    base: '/RAGWEB/',
     plugins: [
       vue(),
       vueDevTools(),
