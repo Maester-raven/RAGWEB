@@ -193,9 +193,22 @@ const inputText = ref('')
 const showUserModal = ref(false)
 const isChangingUser = ref(false)
 const userIdInput = ref('')
+const userIp = ref('')
+
+const getUserIp = async () => {
+  try {
+    const response = await fetch('https://api.ipify.org?format=json')
+    const data = await response.json()
+    userIp.value = data.ip
+  } catch (error) {
+    console.error('获取用户 IP 失败:', error)
+    userIp.value = '未知 IP'
+  }
+}
 
 const openChangeUserModal = () => {
   userIdInput.value = chatStore.currentUserId
+  userIp.value = chatStore.currentUserIp
   isChangingUser.value = true
   showUserModal.value = true
 }
