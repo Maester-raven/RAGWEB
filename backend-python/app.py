@@ -173,16 +173,78 @@ def _close_searcher() -> None:
         pass
 
 
+def _parse_ip_candidate(value: str) -> str | None:
+    candidate = (value or "").strip().strip('"').strip("'")
+    if not candidate or candidate.lower() == "unknown":
+        return None
+
+    if candidate.startswith("[") and "]" in candidate:
+        candidate = candidate[1 : candidate.index("]")]
+
+    if candidate.startswith("::ffff:"):
+        candidate = candidate[7:]
+
+    if "%" in candidate:
+        candidate = candidate.split("%", 1)[0]
+
+    # IPv4 with port: 1.2.3.4:5678
+    if candidate.count(":") == 1 and "." in candidate:
+        host, port = candidate.rsplit(":", 1)
+        if port.isdigit():
+            candidate = host
+
+    try:
+        ip_address(candidate)
+        return candidate
+    except ValueError:
+        return None
+
+
+def _prefer_public_ip(candidates: list[str]) -> str | None:
+    parsed: list[str] = []
+    for c in candidates:
+        ip = _parse_ip_candidate(c)
+        if ip:
+            parsed.append(ip)
+
+    for ip in parsed:
+        ip_obj = ip_address(ip)
+        if ip_obj.is_global:
+            return ip
+
+    return parsed[0] if parsed else None
+
+
 def extract_client_ip() -> str:
+    direct_headers = [
+        request.headers.get("CF-Connecting-IP", ""),
+        request.headers.get("True-Client-IP", ""),
+        request.headers.get("X-Real-IP", ""),
+        request.headers.get("X-Client-IP", ""),
+    ]
+    chosen = _prefer_public_ip(direct_headers)
+    if chosen:
+        return chosen
+
     xff = request.headers.get("X-Forwarded-For", "").strip()
     if xff:
-        return xff.split(",")[0].strip()
+        chosen = _prefer_public_ip([p.strip() for p in xff.split(",")])
+        if chosen:
+            return chosen
 
-    xri = request.headers.get("X-Real-IP", "").strip()
-    if xri:
-        return xri
+    forwarded = request.headers.get("Forwarded", "").strip()
+    if forwarded:
+        forwarded_candidates: list[str] = []
+        for seg in forwarded.split(","):
+            for item in seg.split(";"):
+                kv = item.strip()
+                if kv.lower().startswith("for="):
+                    forwarded_candidates.append(kv.split("=", 1)[1].strip())
+        chosen = _prefer_public_ip(forwarded_candidates)
+        if chosen:
+            return chosen
 
-    return (request.remote_addr or "").strip() or "0.0.0.0"
+    return _parse_ip_candidate((request.remote_addr or "").strip()) or "0.0.0.0"
 
 
 def normalize_ip(raw_ip: str) -> str:

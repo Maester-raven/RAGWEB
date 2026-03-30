@@ -28,6 +28,7 @@ export default defineConfig(({ mode }) => {
         '/api/chat': {
           target: chatBackendTarget,
           changeOrigin: true,
+          xfwd: true,
           secure: false,
         },
         '/v1': {
