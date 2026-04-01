@@ -18,12 +18,12 @@ pip install -r requirements.txt
 
 ## 2. 配置环境变量
 
-可复制 `.env.example` 后按需修改，至少保证 MySQL 可访问。
+可复制 `.env.example` 后按需修改，至少保证 PostgreSQL 可访问。
 
 注意：
 
 - 需自行准备 `ip2region` 的 xdb 文件（例如 `ip2region_v4.xdb`）
-- 默认路径是 `backend-python/ip2region/ip2region_v4.xdb`
+- 默认路径是 `backend-python/ip2region/data/ip2region_v4.xdb`
 
 ## 3. 启动服务
 
