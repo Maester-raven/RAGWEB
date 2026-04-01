@@ -39,3 +39,11 @@ __screenshots__/
 *.timestamp-*-*.mjs
 
 .env
+__pycache__/
+
+#ip2region
+backend-python/ip2region/binding
+backend-python/ip2region/maker
+backend-python/ip2region/data/sample
+backend-python/ip2region/data/*.csv
+backend-python/ip2region/data/*.txt

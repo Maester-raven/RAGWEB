@@ -28,6 +28,12 @@ pip install -r requirements.txt
 ## 3. 启动服务
 
 ```bash
+uvicorn app:app --host 0.0.0.0 --port 9000
+```
+
+或直接：
+
+```bash
 python app.py
 ```
 
