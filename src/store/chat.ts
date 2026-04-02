@@ -11,7 +11,7 @@ export const useChatStore = defineStore('chat', {
     isDarkTheme: false,
     isDeepThinking: false,
     isShowThinking: true,
-    isStreaming: false,
+    isStreaming: true,
     sessions: [] as Session[],
     currentSessionId: '',
     currentUserId: localStorage.getItem('chat_user_id') ?? '',
