@@ -8,9 +8,77 @@ const api = axios.create({
   timeout: CHAT_TIMEOUT_MS,
 })
 
+const CONTEXT_OVERFLOW_CODE = 'CONTEXT_OVERFLOW'
+const CONTEXT_OVERFLOW_FALLBACK_MESSAGE = '输入内容过长，已超过模型上下文长度上限，请精简后重试。'
+
+const extractErrorDetailFromAny = (payload: unknown): string => {
+  if (!payload) return ''
+  if (typeof payload === 'string') return payload
+  if (typeof payload !== 'object') return ''
+
+  const record = payload as Record<string, unknown>
+  const candidate = record.detail ?? record.message ?? record.error ?? record.msg
+  if (typeof candidate === 'string') return candidate
+
+  if (Array.isArray(candidate)) {
+    return candidate
+      .map((item) => {
+        if (typeof item === 'string') return item
+        if (item && typeof item === 'object') {
+          const itemRecord = item as Record<string, unknown>
+          return String(itemRecord.msg ?? itemRecord.message ?? itemRecord.detail ?? '')
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('; ')
+  }
+
+  return ''
+}
+
+const extractErrorCodeFromAny = (payload: unknown): string => {
+  if (!payload || typeof payload !== 'object') return ''
+
+  const record = payload as Record<string, unknown>
+  const candidate = record.code ?? record.error_code ?? record.errorCode
+
+  if (typeof candidate === 'string') return candidate
+  if (typeof candidate === 'number') return String(candidate)
+  return ''
+}
+
+const normalizeApiErrorDetail = (payload: unknown, fallbackDetail = ''): string => {
+  const detail = extractErrorDetailFromAny(payload) || fallbackDetail
+  const code = extractErrorCodeFromAny(payload).toUpperCase()
+
+  if (code === CONTEXT_OVERFLOW_CODE) {
+    return detail || CONTEXT_OVERFLOW_FALLBACK_MESSAGE
+  }
+
+  return detail
+}
+
+const extractApiErrorMessage = (error: unknown): string => {
+  if (axios.isAxiosError(error)) {
+    const responseData = error.response?.data
+    const detail = normalizeApiErrorDetail(responseData)
+    if (detail) return detail
+    if (typeof error.message === 'string' && error.message) return error.message
+    return '请求失败'
+  }
+
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
 export const sendMessage = async (data: ChatRequest): Promise<ChatResponse> => {
-  const response = await api.post<ChatResponse>('/v1/rag/chat', data)
-  return response.data
+  try {
+    const response = await api.post<ChatResponse>('/v1/rag/chat', data)
+    return response.data
+  } catch (error) {
+    throw new Error(extractApiErrorMessage(error))
+  }
 }
 
 /**
@@ -46,7 +114,24 @@ export const sendMessageStream = async (
     })
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      const rawText = await response.text()
+      let detail = rawText
+      let parsedPayload: unknown = null
+
+      try {
+        parsedPayload = rawText ? JSON.parse(rawText) : null
+      } catch {
+        // 非 JSON 响应，保留原始文本
+      }
+
+      if (parsedPayload) {
+        detail = normalizeApiErrorDetail(parsedPayload, detail)
+      } else if (/CONTEXT_OVERFLOW/i.test(rawText)) {
+        detail = CONTEXT_OVERFLOW_FALLBACK_MESSAGE
+      }
+
+      const suffix = detail || response.statusText || '请求失败'
+      throw new Error(`HTTP ${response.status}: ${suffix}`)
     }
 
     const reader = response.body?.getReader()

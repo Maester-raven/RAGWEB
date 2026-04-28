@@ -4,11 +4,11 @@
     <aside class="sidebar">
       <div class="sidebar-brand">
         <div class="brand-icon">AI</div>
-        <span class="brand-name">AI 助手</span>
+        <span class="brand-name">BNBU 助手</span>
       </div>
 
       <button class="new-session-btn" @click="chatStore.createNewSession()">
-        <span class="btn-icon">＋</span>
+        <span class="btn-icon">+</span>
         <span>新对话</span>
       </button>
 
@@ -64,7 +64,7 @@
         <div class="header-title">
           <div class="header-avatar">AI</div>
           <div>
-            <div class="header-name">AI 助手</div>
+            <div class="header-name">BNBU 助手</div>
             <div class="header-status">
               <span class="status-dot"></span>
               在线
@@ -78,8 +78,11 @@
         <div v-for="message in chatStore.messages" :key="message.id" :class="['message-row', message.role]">
           <div v-if="message.role === 'assistant'" class="avatar assistant-avatar">AI</div>
           <div class="bubble-wrapper">
+            <div class="thinking-indicator" v-if="shouldShowThinkingIndicator(message)">
+              思考中
+            </div>
             <div class="thinking-context"
-              v-if="message.role === 'assistant' && chatStore.isDeepThinking && chatStore.isShowThinking && message.content.includes('<think>')">
+              v-if="message.role === 'assistant' && chatStore.isShowThinking && hasThinkContent(message.content)">
               {{ getThinkContent(message.content) }}
             </div>
             <div class="message-bubble" :class="{ 'markdown-body': message.role === 'assistant' }"
@@ -100,6 +103,7 @@
             </div>
           </div>
         </div>
+        <div v-if="showContextLimitTip" class="context-limit-tip">对话轮次已达到上限，请开启新对话</div>
       </div>
 
       <!-- 底部输入区 -->
@@ -182,9 +186,51 @@ import type { ChatRecord } from '../types/chat' // 导入数据库记录类型
 
 marked.setOptions({ breaks: true, gfm: true })
 
+const markdownLinkPattern = /\[[^\]]+\]\([^)]+\)/g
+const rawUrlPattern = /https?:\/\/[A-Za-z0-9\-._~:/?#\[\]@!$&'*+,;=%]+/g
+const trailingUrlPunctuationPattern = /[),.?!;:，。；：！？）】》]+$/u
+
+const linkifyPlainTextUrls = (plainText: string): string => {
+  return plainText.replace(rawUrlPattern, (matched: string, offset: number, source: string) => {
+    const prevChar = offset > 0 ? source[offset - 1] : ''
+    const nextChar = offset + matched.length < source.length ? source[offset + matched.length] : ''
+
+    // 保留 <https://example.com> 这类已显式包裹的 URL，不重复改写
+    if (prevChar === '<' && nextChar === '>') {
+      return matched
+    }
+
+    const trimmed = matched.replace(trailingUrlPunctuationPattern, '')
+    const trailing = matched.slice(trimmed.length)
+
+    if (!trimmed) {
+      return matched
+    }
+
+    return `[${trimmed}](${trimmed})${trailing}`
+  })
+}
+
+const linkifyRawUrls = (content: string): string => {
+  let result = ''
+  let lastIndex = 0
+
+  for (const match of content.matchAll(markdownLinkPattern)) {
+    const matchText = match[0]
+    const matchIndex = match.index ?? 0
+    result += linkifyPlainTextUrls(content.slice(lastIndex, matchIndex))
+    result += matchText
+    lastIndex = matchIndex + matchText.length
+  }
+
+  result += linkifyPlainTextUrls(content.slice(lastIndex))
+  return result
+}
+
 const renderMarkdown = (content: string): string => {
   if (!content) return ''
-  const raw = marked.parse(content) as string
+  const normalizedContent = linkifyRawUrls(content)
+  const raw = marked.parse(normalizedContent) as string
   return DOMPurify.sanitize(raw)
 }
 
@@ -194,6 +240,8 @@ const showUserModal = ref(false)
 const isChangingUser = ref(false)
 const userIdInput = ref('')
 const userIp = ref('')
+const showContextLimitTip = ref(false)
+const contextOverflowMessage = '输入内容过长，已超过模型上下文长度上限，请精简后重试。'
 
 const getUserIp = async () => {
   try {
@@ -208,7 +256,6 @@ const getUserIp = async () => {
 
 const openChangeUserModal = () => {
   userIdInput.value = chatStore.currentUserId
-  userIp.value = chatStore.currentUserIp
   isChangingUser.value = true
   showUserModal.value = true
 }
@@ -380,6 +427,43 @@ const sendAudioToWhisper = async (audioBlob: Blob): Promise<string> => {
 
 const messageListRef = ref<HTMLElement | null>(null)
 
+const hasThinkContent = (content: string) => content.includes('<think>')
+
+const isThinkingInProgress = (content: string) => {
+  const start = content.indexOf('<think>')
+  if (start === -1) return false
+  return content.indexOf('</think>', start) === -1
+}
+
+const isCurrentStreamingAssistantMessage = (message: Message) => {
+  if (!chatStore.isLoading || !chatStore.isStreaming) return false
+  if (message.role !== 'assistant') return false
+
+  const lastMessage = chatStore.messages[chatStore.messages.length - 1]
+  if (!lastMessage) return false
+  return lastMessage.id === message.id
+}
+
+const shouldShowThinkingIndicator = (message: Message) => {
+  if (message.role !== 'assistant') return false
+
+  // 1) 后端返回 <think>...</think> 时，按标签精确显示/隐藏
+  if (isThinkingInProgress(message.content)) return true
+
+  // 2) 后端在流式阶段过滤了 think 标签时，AI 正在生成且正文尚未出现，视为思考中
+  if (isCurrentStreamingAssistantMessage(message) && !getDisplayContent(message.content)) {
+    return true
+  }
+
+  return false
+}
+
+const isContextLengthExceededError = (errorMsg: string) => {
+  return /CONTEXT_OVERFLOW|context_length_exceeded|maximum\s+context\s+length|max\s*context\s*length|context\s*window|too\s+many\s+tokens|token\s+limit|input\s+is\s+too\s+long|prompt\s+is\s+too\s+long|超出.{0,8}上下文|上下文.{0,8}(超|长|限)|输入内容过长|轮次上限/i.test(
+    errorMsg,
+  )
+}
+
 const getThinkContent = (content: string) => {
   const start = content.indexOf('<think>')
   if (start === -1) return ''
@@ -413,6 +497,8 @@ const scrollToBottom = async () => {
 const handleSend = async () => {
   // 1. 先检查输入和加载状态，若不满足直接返回
   if (!inputText.value.trim() || chatStore.isLoading) return
+
+  showContextLimitTip.value = false
 
   // 2. 立即设置加载状态，锁定后续调用（核心修复）
   chatStore.setLoading(true)
@@ -482,16 +568,28 @@ const handleSend = async () => {
           }
         })()
 
+        showContextLimitTip.value = false
         chatStore.setLoading(false) // 流式结束后重置加载状态
         scrollToBottom()
       },
       (error: Error) => {
         console.error('流式传输错误:', error)
+        const isContextOverflow = isContextLengthExceededError(error.message)
+        showContextLimitTip.value = isContextOverflow
         if (!streamedContent) {
+          if (isContextOverflow) {
+            chatStore.removeMessage(msgId)
+            chatStore.setLoading(false)
+            scrollToBottom()
+            return
+          }
+
           const isTimeout = /超时|timeout/i.test(error.message)
           chatStore.updateMessageContent(
             msgId,
-            isTimeout ? '请求超时，请检查网络后重试。' : '抱歉，发送失败了，请稍后再试。'
+            isTimeout
+              ? '请求超时，请检查网络后重试。'
+              : '抱歉，发送失败了，请稍后再试。'
           )
         }
         chatStore.setLoading(false) // 错误时重置加载状态
@@ -509,6 +607,7 @@ const handleSend = async () => {
         timestamp: Date.now(),
       }
       chatStore.addMessage(assistantMessage)
+      showContextLimitTip.value = false
       scrollToBottom()
 
       // ===== 修改：只有成功获得AI响应才保存用户和AI消息到数据库 =====
@@ -528,13 +627,19 @@ const handleSend = async () => {
     } catch (error) {
       console.error('发送消息失败:', error)
       const errorMsg = error instanceof Error ? error.message : String(error)
+      const isContextOverflow = isContextLengthExceededError(errorMsg)
+      showContextLimitTip.value = isContextOverflow
       const isTimeout = /超时|timeout|ECONNABORTED/i.test(errorMsg)
-      chatStore.addMessage({
-        id: Date.now().toString(),
-        content: isTimeout ? '请求超时，请检查网络后重试。' : '抱歉，发送失败了，请稍后再试。',
-        role: 'assistant',
-        timestamp: Date.now(),
-      })
+      if (!isContextOverflow) {
+        chatStore.addMessage({
+          id: Date.now().toString(),
+          content: isTimeout
+            ? '请求超时，请检查网络后重试。'
+            : '抱歉，发送失败了，请稍后再试。',
+          role: 'assistant',
+          timestamp: Date.now(),
+        })
+      }
       scrollToBottom()
     } finally {
       chatStore.setLoading(false) // 无论成功失败，都重置加载状态
@@ -576,6 +681,13 @@ watch(
     }
   },
   { immediate: true }
+)
+
+watch(
+  () => chatStore.currentSessionId,
+  () => {
+    showContextLimitTip.value = false
+  },
 )
 </script>
 
@@ -979,6 +1091,15 @@ watch(
   word-wrap: break-word;
 }
 
+.thinking-indicator {
+  align-self: flex-start;
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .message-bubble {
   padding: 12px 16px;
   border-radius: 16px;
@@ -1264,6 +1385,13 @@ textarea::placeholder {
   font-size: 11px;
   color: var(--text-muted);
   margin-top: 8px;
+}
+
+.context-limit-tip {
+  margin-bottom: 8px;
+  text-align: center;
+  font-size: 13px;
+  color: #d35400;
 }
 
 /* ===== 响应式 ===== */

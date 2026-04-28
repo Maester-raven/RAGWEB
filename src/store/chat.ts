@@ -10,8 +10,8 @@ export const useChatStore = defineStore('chat', {
     isLoading: false,
     isDarkTheme: false,
     isDeepThinking: false,
-    isShowThinking: true,
-    isStreaming: false,
+    isShowThinking: false,
+    isStreaming: true,
     sessions: [] as Session[],
     currentSessionId: '',
     currentUserId: localStorage.getItem('chat_user_id') ?? '',
@@ -55,7 +55,7 @@ export const useChatStore = defineStore('chat', {
     toggleDeepThinking() {
       this.isDeepThinking = !this.isDeepThinking
     },
-    toggeleShowThinking() {
+    toggleShowThinking() {
       this.isShowThinking = !this.isShowThinking
     },
     toggleStreaming() {
@@ -67,6 +67,13 @@ export const useChatStore = defineStore('chat', {
       const session = this.sessions.find((s) => s.id === this.currentSessionId)
       const sessionMsg = session?.messages.find((m) => m.id === id)
       if (sessionMsg) sessionMsg.content = content
+    },
+    removeMessage(id: string) {
+      this.messages = this.messages.filter((m) => m.id !== id)
+      const session = this.sessions.find((s) => s.id === this.currentSessionId)
+      if (session) {
+        session.messages = session.messages.filter((m) => m.id !== id)
+      }
     },
     createNewSession() {
       const newSession: Session = {
