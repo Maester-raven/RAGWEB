@@ -228,3 +228,12 @@ export const getSessionsList = async (user_id: string) => {
   return chatDbApi.get(`/sessions/${encodeURIComponent(user_id)}`)
 }
 
+export const sendAlertToTeacher = async (data: {
+  studentName: string;
+  contact: string;
+  sessionId: string;
+  intentType: 'high_intent' | 'urgent';
+  messageSnippet: string;
+}) => {
+  return axios.post('/api/alert/teacher', data);
+};

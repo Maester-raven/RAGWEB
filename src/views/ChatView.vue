@@ -108,6 +108,9 @@
 
       <!-- 底部输入区 -->
       <div class="input-wrapper">
+        <div v-if="chatStore.contactModalState === 'dismissed'" class="quick-contact-banner">
+          找不到人工入口？<a href="#" @click.prevent="openContactModal">点击这里联系招生老师</a>
+        </div>
         <div class="input-box">
           <button class="deep-think-btn" :class="{ active: chatStore.isDeepThinking }"
             @click="chatStore.toggleDeepThinking()" title="深度思考">
@@ -168,6 +171,27 @@
       </div>
     </div>
   </div>
+  <div v-if="showContactModal" class="modal-overlay" @click.self="closeModal">
+    <div class="modal-box">
+      <div class="modal-title">📞 老师将尽快联系您</div>
+      <p class="modal-desc">请输入您的联系方式，我们将安排招生老师为您详细解答。</p>
+      <div class="modal-input-group">
+        <input 
+          v-model="contactForm.phone" 
+          type="tel" 
+          placeholder="手机号 (必填)" 
+          class="modal-input"
+          @keydown.enter="submitContactForm"
+        />
+      </div>
+      <div class="modal-actions">
+        <button class="modal-cancel-btn" @click="handleModalCancel">取消</button>
+        <button class="modal-confirm-btn" @click="submitContactForm" :disabled="!contactForm.phone">
+          提交并联系老师
+        </button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -183,12 +207,73 @@ import DOMPurify from 'dompurify'
 // ===== 新增代码（仅加这两行）=====
 import { saveChatRecord } from '../api/chat' // 导入保存数据库的接口
 import type { ChatRecord } from '../types/chat' // 导入数据库记录类型
+import { sendAlertToTeacher} from '../api/chat'
 
 marked.setOptions({ breaks: true, gfm: true })
 
 const markdownLinkPattern = /\[[^\]]+\]\([^)]+\)/g
 const rawUrlPattern = /https?:\/\/[A-Za-z0-9\-._~:/?#\[\]@!$&'*+,;=%]+/g
 const trailingUrlPunctuationPattern = /[),.?!;:，。；：！？）】》]+$/u
+const showContactModal = ref(false)
+const contactForm = ref({
+  phone: ''
+})
+
+const KEYWORDS = {
+  HIGH_INTENT: [
+    '第一志愿', '第一选择', '很想来', '想把贵校', '冲一冲', '稳录', '保底',
+    '能报吗', '有希望吗', '机会大吗', '能上吗', '能进吗', '能被录取', '稳不稳',
+    '加微信', '加老师', '电话', '联系方式'
+  ],
+  URGENT: [
+    '投诉', '举报', '不合理', '不一样', '有问题', '不满意', '离谱', '欺骗',
+    '截止', '马上', '着急', '来不及', '报错', '失败', '申诉', '人工'
+  ]
+}
+
+const mockBackendAlert = (phoneNumber: string, userMessage: string) => {
+  // 模拟网络延迟，让前端看到“发送中”的状态
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      const currentTime = new Date().toLocaleString()
+      const mockResponseData = {
+        success: true,
+        message: '模拟发送成功（实际未发短信）',
+        data: {
+          to: phoneNumber,
+          content: `用户【${phoneNumber}】在 ${currentTime} 留言：${userMessage}。请负责老师尽快联系！`,
+          timestamp: Date.now()
+        }
+      }
+      
+      // 在控制台打印“假数据”，这就是你的测试证据
+      console.log('%c [Mock API Response] 收到线索：', 'color: #4CAF50; font-weight: bold;', mockResponseData)
+      
+      resolve(mockResponseData)
+    }, 800) // 0.8秒延迟，模拟网络请求
+  })
+}
+
+const checkForKeywords = (text: string): { match: boolean; type: 'high_intent' | 'urgent'; words: string[] } => {
+  let foundWords: string[] = []
+  
+  const highIntentMatches = KEYWORDS.HIGH_INTENT.filter(word => text.includes(word))
+  if (highIntentMatches.length > 0) {
+    foundWords = foundWords.concat(highIntentMatches)
+  }
+
+  const urgentMatches = KEYWORDS.URGENT.filter(word => text.includes(word))
+  if (urgentMatches.length > 0) {
+    foundWords = foundWords.concat(urgentMatches)
+  }
+
+  if (foundWords.length > 0) {
+    const type = urgentMatches.length > 0 ? 'urgent' : 'high_intent'
+    return { match: true, type, words: foundWords }
+  }
+
+  return { match: false, type: 'high_intent', words: [] }
+}
 
 const linkifyPlainTextUrls = (plainText: string): string => {
   return plainText.replace(rawUrlPattern, (matched: string, offset: number, source: string) => {
@@ -514,6 +599,7 @@ const handleSend = async () => {
   chatStore.addMessage(userMessage)
 
   // 4. 清空输入框并滚动到底部
+  const userinput = inputText.value
   inputText.value = ''
   scrollToBottom()
 
@@ -530,6 +616,18 @@ const handleSend = async () => {
     enable_thinking: chatStore.isDeepThinking,
     return_thinking: chatStore.isShowThinking,
   }
+
+  const checkAndShowAlert = () => {
+    console.log("【DEBUG】当前 contactModalState:", chatStore.contactModalState);
+    const userInputCheck = checkForKeywords(userinput)
+    console.log("【DEBUG】关键词匹配结果:", userInputCheck);
+    if (userInputCheck.match) {
+      if (chatStore.contactModalState === 'idle') {
+        chatStore.setPendingAlert(userInputCheck.type, userinput)
+        showContactModal.value = true
+      }
+    }
+  };
 
   // 6. 区分流式/普通模式处理
   if (chatStore.isStreaming) {
@@ -568,6 +666,7 @@ const handleSend = async () => {
           }
         })()
 
+        checkAndShowAlert();
         showContextLimitTip.value = false
         chatStore.setLoading(false) // 流式结束后重置加载状态
         scrollToBottom()
@@ -610,6 +709,8 @@ const handleSend = async () => {
       showContextLimitTip.value = false
       scrollToBottom()
 
+      checkAndShowAlert();
+
       // ===== 修改：只有成功获得AI响应才保存用户和AI消息到数据库 =====
       try {
         const chatRecord: ChatRecord = {
@@ -645,6 +746,51 @@ const handleSend = async () => {
       chatStore.setLoading(false) // 无论成功失败，都重置加载状态
     }
   }
+  
+}
+
+const submitContactForm = async () => {
+  if (!contactForm.value.phone) return
+  
+  try {
+    await sendAlertToTeacher({
+      contact: contactForm.value.phone,
+      sessionId: chatStore.currentSessionId,
+      intentType: chatStore.pendingAlertType || 'high_intent',
+      messageSnippet: '用户触发了高意向关键词',
+      studentName: ''
+    })
+    chatStore.markContactCompleted()
+    showContactModal.value = false
+    contactForm.value.phone = ''
+  } catch (error) {
+    alert('提交失败，请稍后重试')
+  }
+}
+
+const openContactModal = () => {
+  showContactModal.value = true
+}
+
+const handleModalCancel = () => {
+  showContactModal.value = false
+  chatStore.markContactDismissed()
+}
+
+const closeModal = () => {
+  showContactModal.value = false
+  // 可选：清空已输入的手机号，下次打开是干净的
+  contactForm.value.phone = ''
+}
+
+const sendAlertToTeacher = async (data: {
+  studentName: string;
+  contact: string;
+  sessionId: string;
+  intentType: 'high_intent' | 'urgent';
+  messageSnippet: string;
+}) => {
+  return axios.post('/api/alert/teacher', data)
 }
 
 onMounted(async () => {
@@ -1449,7 +1595,8 @@ textarea::placeholder {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  /*background: rgba(0, 0, 0, 0.45);*/
+  background: rgba(38, 34, 31, 0.65); 
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1457,7 +1604,9 @@ textarea::placeholder {
 }
 
 .modal-box {
-  background: var(--surface);
+  background: #FFFDF0;
+  /*background: var(--surface);*/
+  border: 1.5px solid #E9BE91; 
   border-radius: 16px;
   padding: 32px 28px 24px;
   width: 360px;
@@ -1486,7 +1635,9 @@ textarea::placeholder {
   padding: 10px 12px;
   border: 1.5px solid var(--border);
   border-radius: 8px;
-  background: var(--chat-bg);
+  background-color: #FFF9F0; 
+  /*background: var(--chat-bg);*/
+  box-shadow: inset 0 2px 4px rgba(243, 175, 39, 0.15);
   color: var(--text-primary);
   font-size: 14px;
   outline: none;
@@ -1535,5 +1686,30 @@ textarea::placeholder {
 
 .modal-cancel-btn:hover {
   background: var(--accent-light);
+}
+
+.modal-input-group {
+  margin-bottom: 20px;
+}
+
+.quick-contact-banner {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px;
+  background-color: var(--accent-light);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.quick-contact-banner a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.quick-contact-banner a:hover {
+  text-decoration: underline;
 }
 </style>

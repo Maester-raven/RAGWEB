@@ -15,6 +15,14 @@ export const useChatStore = defineStore('chat', {
     sessions: [] as Session[],
     currentSessionId: '',
     currentUserId: localStorage.getItem('chat_user_id') ?? '',
+
+    showContactModal: false,
+    pendingAlertType: null, 
+    contactInfo: { 
+      phone: ''
+    },
+
+    contactModalState: 'idle',
   }),
   actions: {
     setUserId(userId: string) {
@@ -86,6 +94,18 @@ export const useChatStore = defineStore('chat', {
       this.currentSessionId = newSession.id
       this.messages = []
     },
+
+    markContactDismissed() {
+      this.contactModalState = 'dismissed'
+    },
+    markContactCompleted() {
+      this.contactModalState = 'contacted'
+    },
+    resetContactState() {
+      // 如果需要重置（例如切换用户时）
+      this.contactModalState = 'idle'
+    },
+
     async switchSession(sessionId: string) {
       const session = this.sessions.find(s => s.id === sessionId)
       if (!session) return
@@ -155,6 +175,18 @@ export const useChatStore = defineStore('chat', {
       } else {
         this.createNewSession()
       }
+    },
+    setShowContactModal(show: boolean) {
+      this.showContactModal = show
+    },
+    
+    setPendingAlert(type: 'high_intent' | 'urgent', messageSnippet: string) {
+      this.pendingAlertType = type
+      this.setShowContactModal(true)
+    },
+
+    updateContactInfo(field: 'phone', value: string) {
+      this.contactInfo[field] = value
     },
   },
 })

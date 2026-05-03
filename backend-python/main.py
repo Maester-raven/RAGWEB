@@ -9,7 +9,7 @@ from datetime import datetime
 
 # --- 1. 数据库配置 (ORM 优化部分 - 对应原 A/B/D 功能) ---
 # 这里简化了原 app.py 中手动读取 .env 和复杂的连接池管理
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/ai_chat")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:@localhost:5432/ai_chat")
 if not DATABASE_URL:
     raise RuntimeError("请在 .env 文件中配置 DATABASE_URL，或者设置环境变量")
 engine = create_engine(DATABASE_URL)
